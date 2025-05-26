@@ -95,13 +95,15 @@ Telegram-бот для конференции предоставляет ком�
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/yourusername/conference_bot.git
-cd conference_bot
+git clone https://github.com/yourusername/conf_bot.git
+cd conf_bot
 ```
 
 2. Создайте и активируйте виртуальное окружение:
 ```bash
-python -m venv venv
+sudo apt update
+sudo apt install python3-venv
+python3 -m venv venv
 source venv/bin/activate  # для Linux/Mac
 venv\Scripts\activate     # для Windows
 ```
@@ -122,13 +124,17 @@ TELEGRAM_TOKEN=your_telegram_token_here
 MONGO_URI=mongodb://localhost:27017/conference_bot
 ADMIN_CODE=your_admin_code_here
 ```
+6. Деактивация виртуального окружения (по завершении работы):
+```bash
+deactivate
+```
 
-6. Запустите бота:
+7. Запустите бота:
 ```bash
 python main.py
 ```
 
-7. Для запуска планировщика рассылок (опционально):
+8. Для запуска планировщика рассылок (опционально):
 ```bash
 python modules/broadcaster.py run_scheduler
 ```
