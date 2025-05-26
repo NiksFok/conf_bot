@@ -1092,26 +1092,10 @@ class ConferenceBot:
             return base_help
     
     def run(self):
-        """Запускает бота."""
-        # Проверяем наличие вебхука
-        webhook_url = os.getenv("WEBHOOK_URL")
-        
-        if webhook_url:
-            # Запускаем бота с вебхуком
-            self.updater.start_webhook(
-                listen="0.0.0.0",
-                port=int(os.getenv("PORT", 5000)),
-                url_path=self.token,
-                webhook_url=webhook_url + self.token
-            )
-            logger.info(f"Бот запущен с вебхуком на {webhook_url}")
-        else:
-            # Запускаем бота с long polling
-            self.updater.start_polling()
-            logger.info("Бот запущен с long polling")
-        
-        # Запускаем бота до нажатия Ctrl+C
-        self.updater.idle()
+    """Запускает бота в режиме long polling."""
+    self.updater.start_polling()
+    self.updater.idle()
+    logging.info('Бот запущен в режиме long polling')
 
 
 if __name__ == "__main__":
