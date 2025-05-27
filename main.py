@@ -112,8 +112,11 @@ class ConferenceBot:
     
     def start(self, update: Update, context: CallbackContext):
         """Обработчик команды /start."""
+        logging.info("Получена команда /start")
         user_id = update.effective_user.id
+        logging.info(f"ID пользователя: {user_id}")
         user = self.db.get_user(user_id)
+        logging.info(f"Данные пользователя: {user}")
         
         if user:
             # Пользователь уже зарегистрирован
@@ -126,10 +129,12 @@ class ConferenceBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
+            logging.info("Отправляю приветственное сообщение")
             update.message.reply_text(
-                "Добро пожаловать на конференцию! Для использования бота необходимо зарегистрироваться.",
+                "Добро пожаловать в Лабораторию от Т-Банка на Aha'25! Для использования бота необходимо зарегистрироваться.",
                 reply_markup=reply_markup
             )
+            logging.info("Приветственное сообщение отправлено")
     
     def help_command(self, update: Update, context: CallbackContext):
         """Обработчик команды /help."""
