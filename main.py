@@ -80,6 +80,7 @@ class ConferenceBot:
         self.dispatcher.add_handler(CommandHandler("start", self.start))
         self.dispatcher.add_handler(CommandHandler("help", self.help_command))
         self.dispatcher.add_handler(CommandHandler("admin", self.admin_command))
+        self.updater.dispatcher.add_handler(CommandHandler("test", self.test))        
         
         # Обработчик регистрации
         registration_handler = ConversationHandler(
@@ -109,6 +110,14 @@ class ConferenceBot:
         
         # Обработчик ошибок
         self.dispatcher.add_error_handler(self.error_handler)
+    
+    def test(self, update: Update, context: CallbackContext):
+        """Тестовая команда."""
+        logging.info("Получена команда /test")
+        update.message.reply_text("Тестовое сообщение")
+        logging.info("Тестовое сообщение отправлено")
+        self.updater.dispatcher.add_handler(CommandHandler("test", self.test))
+
     
     def start(self, update: Update, context: CallbackContext):
         """Обработчик команды /start."""
@@ -1097,10 +1106,10 @@ class ConferenceBot:
             return base_help
     
     def run(self):
-    """Запускает бота в режиме long polling."""
-    self.updater.start_polling()
-    self.updater.idle()
-    logging.info('Бот запущен в режиме long polling')
+        """Запускает бота в режиме long polling."""
+        self.updater.start_polling()
+        self.updater.idle()
+        logging.info('Бот запущен в режиме long polling')
 
 
 if __name__ == "__main__":
