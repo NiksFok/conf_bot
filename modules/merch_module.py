@@ -30,7 +30,8 @@ class MerchManager:
             'image_url': image_url,
             'points_cost': points_cost,
             'quantity_total': quantity_total,
-            'quantity_left': quantity_total
+            'quantity_left': quantity_total,
+            'created_at': datetime.datetime.utcnow()
         }
         
         return self.db.create_merch(merch_data)
@@ -73,7 +74,8 @@ class MerchManager:
             'user_id': user_id,
             'merch_id': merch_id,
             'points_spent': merch.get('points_cost', 0),
-            'status': 'pending'
+            'status': 'pending',
+            'created_at': datetime.datetime.utcnow()
         }
         
         self.db.create_merch_transaction(transaction_data)
@@ -86,16 +88,14 @@ class MerchManager:
     def cancel_order(self, transaction_id: str) -> bool:
         """Отменяет заказ."""
         # Получаем информацию о транзакции
-        transaction = self.db.merch_transactions.find_one({'transaction_id': transaction_id})
+        transaction = self.db.get_merch_transaction(transaction_id)
         if not transaction or transaction.get('status') != 'pending':
             return False
         
         # Возвращаем мерч в наличие
         merch_id = transaction.get('merch_id')
-        self.db.merch.update_one(
-            {'merch_id': merch_id},
-            {'$inc': {'quantity_left': 1}}
-        )
+        if not self.db.increment_merch_quantity(merch_id):
+            return False
         
         # Обновляем статус транзакции
         return self.db.update_merch_transaction_status(transaction_id, 'cancelled')
@@ -110,12 +110,23 @@ class MerchManager:
             if merch:
                 tx['merch_name'] = merch.get('name')
                 tx['merch_description'] = merch.get('description')
+                
+                # Добавляем эмодзи к статусу заказа для улучшения UX
+                status = tx.get('status', '')
+                if status == 'pending':
+                    tx['status_display'] = '⏳ Ожидает выдачи'
+                elif status == 'completed':
+                    tx['status_display'] = '✅ Выдан'
+                elif status == 'cancelled':
+                    tx['status_display'] = '❌ Отменен'
+                else:
+                    tx['status_display'] = status
         
         return transactions
     
     def get_pending_orders(self) -> List[Dict[str, Any]]:
         """Получает список ожидающих выполнения заказов."""
-        pending_transactions = list(self.db.merch_transactions.find({'status': 'pending'}).sort('created_at', 1))
+        pending_transactions = self.db.get_pending_merch_transactions()
         
         # Добавляем информацию о пользователе и мерче к каждой транзакции
         for tx in pending_transactions:
@@ -127,13 +138,46 @@ class MerchManager:
             
             if merch:
                 tx['merch_name'] = merch.get('name')
+                
+            # Добавляем эмодзи к статусу заказа для улучшения UX
+            tx['status_display'] = '⏳ Ожидает выдачи'
         
         return pending_transactions
+    
+    def handle_out_of_stock(self, merch_id: str) -> bool:
+        """Обрабатывает ситуацию, когда мерч закончился."""
+        # Получаем информацию о мерче
+        merch = self.db.get_merch(merch_id)
+        if not merch:
+            return False
+        
+        # Проверяем, действительно ли мерч закончился
+        if merch.get('quantity_left', 0) > 0:
+            return True
+        
+        # Обновляем статус мерча
+        update_data = {
+            'is_available': False,
+            'out_of_stock_at': datetime.datetime.utcnow()
+        }
+        
+        # Отправляем уведомление администраторам
+        admin_notification = {
+            'type': 'merch_out_of_stock',
+            'merch_id': merch_id,
+            'merch_name': merch.get('name'),
+            'created_at': datetime.datetime.utcnow(),
+            'message': f"🚨 Внимание! Мерч '{merch.get('name')}' закончился. Пожалуйста, пополните запасы."
+        }
+        
+        self.db.create_admin_notification(admin_notification)
+        
+        return self.db.update_merch(merch_id, update_data)
     
     def get_merch_statistics(self) -> Dict[str, Any]:
         """Получает статистику по мерчу."""
         all_merch = self.db.get_all_merch()
-        all_transactions = list(self.db.merch_transactions.find())
+        all_transactions = self.db.get_all_merch_transactions()
         
         total_merch = len(all_merch)
         total_quantity = sum(item.get('quantity_total', 0) for item in all_merch)
@@ -160,7 +204,8 @@ class MerchManager:
                 popular_merch.append({
                     'merch_id': merch_id,
                     'name': merch.get('name'),
-                    'orders_count': count
+                    'orders_count': count,
+                    'popularity_emoji': '🔥' if count > 5 else ('⭐' if count > 2 else '📊')
                 })
         
         return {
