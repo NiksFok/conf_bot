@@ -13,20 +13,20 @@ from utils.db_connector import DBConnector
 class PointsSystem:
     """Класс для управления системой баллов."""
     
-    # Типы транзакций
+    # Типы транзакций с эмодзи
     TRANSACTION_TYPES = {
-        'earn': 'Начисление',
-        'spend': 'Списание'
+        'earn': '⬆️ Начисление',
+        'spend': '⬇️ Списание'
     }
     
-    # Причины транзакций
+    # Причины транзакций с эмодзи
     TRANSACTION_REASONS = {
-        'stand_visit': 'Посещение стенда',
-        'merch_order': 'Заказ мерча',
-        'workshop_attendance': 'Посещение мастер-класса',
-        'registration': 'Регистрация',
-        'admin_adjustment': 'Корректировка администратором',
-        'other': 'Другое'
+        'stand_visit': '🏢 Посещение стенда',
+        'merch_order': '🛍️ Заказ мерча',
+        'workshop_attendance': '📚 Посещение мастер-класса',
+        'registration': '✨ Регистрация',
+        'admin_adjustment': '🔧 Корректировка администратором',
+        'other': '📋 Другое'
     }
     
     def __init__(self, db: DBConnector):
@@ -48,7 +48,8 @@ class PointsSystem:
             'amount': amount,
             'type': 'earn',
             'reason': reason,
-            'reference_id': reference_id
+            'reference_id': reference_id,
+            'created_at': datetime.datetime.utcnow()
         }
         
         self.db.create_points_transaction(transaction_data)
@@ -74,7 +75,8 @@ class PointsSystem:
             'amount': amount,
             'type': 'spend',
             'reason': reason,
-            'reference_id': reference_id
+            'reference_id': reference_id,
+            'created_at': datetime.datetime.utcnow()
         }
         
         self.db.create_points_transaction(transaction_data)
@@ -91,13 +93,55 @@ class PointsSystem:
     
     def check_stand_visit(self, user_id: int, stand_id: str) -> bool:
         """Проверяет, посещал ли пользователь указанный стенд ранее."""
-        transactions = self.db.points_transactions.find({
+        # Исправлено: используем count_documents() вместо устаревшего count()
+        count = self.db.points_transactions.count_documents({
             'user_id': user_id,
             'reason': 'stand_visit',
             'reference_id': stand_id
         })
         
-        return transactions.count() > 0
+        return count > 0
+    
+    def cancel_transaction(self, transaction_id: str) -> bool:
+        """Отменяет транзакцию баллов."""
+        # Получаем информацию о транзакции
+        transaction = self.db.get_points_transaction(transaction_id)
+        if not transaction:
+            return False
+        
+        user_id = transaction.get('user_id')
+        amount = transaction.get('amount', 0)
+        tx_type = transaction.get('type')
+        
+        # Если это начисление, то списываем баллы
+        # Если это списание, то начисляем баллы
+        points_adjustment = -amount if tx_type == 'earn' else amount
+        
+        # Проверяем, достаточно ли баллов у пользователя (если отменяем начисление)
+        if tx_type == 'earn':
+            user = self.db.get_user(user_id)
+            if not user or user.get('points', 0) < amount:
+                return False
+        
+        # Обновляем баланс пользователя
+        if not self.db.update_user_points(user_id, points_adjustment):
+            return False
+        
+        # Создаем транзакцию отмены
+        cancel_reason = f"cancel_{transaction.get('reason', 'other')}"
+        transaction_data = {
+            'user_id': user_id,
+            'amount': amount,
+            'type': 'spend' if tx_type == 'earn' else 'earn',
+            'reason': cancel_reason,
+            'reference_id': transaction_id,
+            'created_at': datetime.datetime.utcnow()
+        }
+        
+        self.db.create_points_transaction(transaction_data)
+        
+        # Обновляем статус исходной транзакции
+        return self.db.update_points_transaction_status(transaction_id, 'cancelled')
     
     def get_points_statistics(self) -> Dict[str, Any]:
         """Получает статистику по баллам."""

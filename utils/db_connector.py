@@ -32,6 +32,7 @@ class DBConnector:
         self.error_logs = self.db.error_logs
         self.events = self.db.events
         self.subscriptions = self.db.subscriptions
+        self.admin_notifications = self.db.admin_notifications
     
     # Методы для работы с пользователями
     
@@ -219,15 +220,41 @@ class DBConnector:
         
         return result.modified_count > 0
     
+    def increment_merch_quantity(self, merch_id: str) -> bool:
+        """Увеличивает количество доступного мерча."""
+        result = self.merch.update_one(
+            {'merch_id': merch_id},
+            {
+                '$inc': {'quantity_left': 1},
+                '$set': {'updated_at': datetime.datetime.utcnow()}
+            }
+        )
+        
+        return result.modified_count > 0
+    
     # Методы для работы с транзакциями баллов
     
     def create_points_transaction(self, transaction_data: Dict[str, Any]) -> str:
         """Создает новую транзакцию баллов."""
         transaction_data['created_at'] = datetime.datetime.utcnow()
         transaction_data['transaction_id'] = f"tr{ObjectId()}"
+        transaction_data['status'] = 'completed'
         
         result = self.points_transactions.insert_one(transaction_data)
         return str(result.inserted_id)
+    
+    def get_points_transaction(self, transaction_id: str) -> Optional[Dict[str, Any]]:
+        """Получает информацию о транзакции баллов по её ID."""
+        return self.points_transactions.find_one({'transaction_id': transaction_id})
+    
+    def update_points_transaction_status(self, transaction_id: str, status: str) -> bool:
+        """Обновляет статус транзакции баллов."""
+        result = self.points_transactions.update_one(
+            {'transaction_id': transaction_id},
+            {'$set': {'status': status}}
+        )
+        
+        return result.modified_count > 0
     
     def get_user_points_transactions(self, user_id: int) -> List[Dict[str, Any]]:
         """Получает список транзакций баллов пользователя."""
@@ -247,11 +274,25 @@ class DBConnector:
         result = self.merch_transactions.insert_one(transaction_data)
         return str(result.inserted_id)
     
+    def get_merch_transaction(self, transaction_id: str) -> Optional[Dict[str, Any]]:
+        """Получает информацию о транзакции мерча по её ID."""
+        return self.merch_transactions.find_one({'transaction_id': transaction_id})
+    
     def get_user_merch_transactions(self, user_id: int) -> List[Dict[str, Any]]:
         """Получает список транзакций мерча пользователя."""
         return list(self.merch_transactions.find(
             {'user_id': user_id}
         ).sort('created_at', -1))
+    
+    def get_pending_merch_transactions(self) -> List[Dict[str, Any]]:
+        """Получает список ожидающих выполнения транзакций мерча."""
+        return list(self.merch_transactions.find(
+            {'status': 'pending'}
+        ).sort('created_at', 1))
+    
+    def get_all_merch_transactions(self) -> List[Dict[str, Any]]:
+        """Получает список всех транзакций мерча."""
+        return list(self.merch_transactions.find().sort('created_at', -1))
     
     def update_merch_transaction_status(self, transaction_id: str, status: str) -> bool:
         """Обновляет статус транзакции мерча."""
@@ -337,6 +378,7 @@ class DBConnector:
         """Логирует ошибку в базу данных."""
         error_data['timestamp'] = datetime.datetime.utcnow()
         error_data['error_id'] = f"err{ObjectId()}"
+        error_data['resolved'] = False
         
         result = self.error_logs.insert_one(error_data)
         return str(result.inserted_id)
@@ -385,13 +427,17 @@ class DBConnector:
         now = datetime.datetime.utcnow()
         
         return list(self.events.find({
-            'start_time': {'$gt': now}
+            'start_time': {'$gte': now}
         }).sort('start_time', 1))
+    
+    def get_all_events(self) -> List[Dict[str, Any]]:
+        """Получает список всех событий."""
+        return list(self.events.find().sort('start_time', 1))
     
     # Методы для работы с подписками
     
     def create_subscription(self, subscription_data: Dict[str, Any]) -> str:
-        """Создает новую подписку в базе данных."""
+        """Создает новую подписку."""
         subscription_data['created_at'] = datetime.datetime.utcnow()
         subscription_data['updated_at'] = datetime.datetime.utcnow()
         subscription_data['subscription_id'] = f"sub{ObjectId()}"
@@ -401,35 +447,41 @@ class DBConnector:
     
     def get_user_subscriptions(self, user_id: int) -> List[Dict[str, Any]]:
         """Получает список подписок пользователя."""
-        return list(self.subscriptions.find({
-            'user_id': user_id,
-            'is_active': True
-        }))
+        return list(self.subscriptions.find({'user_id': user_id}))
     
-    def update_subscription(self, subscription_id: str, is_active: bool) -> bool:
-        """Обновляет статус подписки."""
-        result = self.subscriptions.update_one(
-            {'subscription_id': subscription_id},
-            {
-                '$set': {
-                    'is_active': is_active,
-                    'updated_at': datetime.datetime.utcnow()
-                }
-            }
-        )
+    def delete_subscription(self, user_id: int, subscription_type: str) -> bool:
+        """Удаляет подписку пользователя."""
+        result = self.subscriptions.delete_one({
+            'user_id': user_id,
+            'type': subscription_type
+        })
         
-        return result.modified_count > 0
+        return result.deleted_count > 0
     
     def get_subscribers_by_type(self, subscription_type: str) -> List[Dict[str, Any]]:
         """Получает список пользователей, подписанных на указанный тип уведомлений."""
-        subscriptions = list(self.subscriptions.find({
-            'type': subscription_type,
-            'is_active': True
-        }))
+        return list(self.subscriptions.find({'type': subscription_type}))
+    
+    # Методы для работы с уведомлениями администраторов
+    
+    def create_admin_notification(self, notification_data: Dict[str, Any]) -> str:
+        """Создает новое уведомление для администраторов."""
+        notification_data['created_at'] = datetime.datetime.utcnow()
+        notification_data['notification_id'] = f"notif{ObjectId()}"
+        notification_data['read'] = False
         
-        user_ids = [sub['user_id'] for sub in subscriptions]
+        result = self.admin_notifications.insert_one(notification_data)
+        return str(result.inserted_id)
+    
+    def get_unread_admin_notifications(self) -> List[Dict[str, Any]]:
+        """Получает список непрочитанных уведомлений для администраторов."""
+        return list(self.admin_notifications.find({'read': False}).sort('created_at', -1))
+    
+    def mark_notification_read(self, notification_id: str) -> bool:
+        """Отмечает уведомление как прочитанное."""
+        result = self.admin_notifications.update_one(
+            {'notification_id': notification_id},
+            {'$set': {'read': True}}
+        )
         
-        return list(self.users.find({
-            'user_id': {'$in': user_ids},
-            'is_blocked': False
-        }))
+        return result.modified_count > 0

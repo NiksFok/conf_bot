@@ -8,12 +8,15 @@
 
 import os
 import logging
+import traceback
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Updater, CommandHandler, MessageHandler, CallbackQueryHandler,
     Filters, CallbackContext, ConversationHandler
 )
+from pymongo.errors import ConnectionFailure
 
 # Импорт модулей бота
 from modules.role_management import RoleManager
@@ -33,7 +36,11 @@ load_dotenv()
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -49,10 +56,23 @@ class ConferenceBot:
     def __init__(self):
         """Инициализация бота и подключение к базе данных."""
         self.token = os.getenv("TELEGRAM_TOKEN")
+        if not self.token:
+            raise ValueError("Не указан токен Telegram бота в .env файле")
+            
         self.admin_code = os.getenv("ADMIN_CODE")
+        if not self.admin_code:
+            raise ValueError("Не указан пароль админа БД бота в .env файле")
         
-        # Инициализация подключения к базе данных
-        self.db = DBConnector()
+        # Проверка подключения к базе данных
+        try:
+            # Инициализация подключения к базе данных
+            self.db = DBConnector()
+            # Проверка соединения
+            self.db.client.admin.command('ping')
+            logger.info("Успешное подключение к MongoDB")
+        except ConnectionFailure:
+            logger.error("Не удалось подключиться к MongoDB")
+            raise ConnectionError("Не удалось подключиться к MongoDB. Проверьте настройки подключения.")
         
         # Инициализация менеджеров
         self.role_manager = RoleManager(self.db)
@@ -80,7 +100,7 @@ class ConferenceBot:
         self.dispatcher.add_handler(CommandHandler("start", self.start))
         self.dispatcher.add_handler(CommandHandler("help", self.help_command))
         self.dispatcher.add_handler(CommandHandler("admin", self.admin_command))
-        self.updater.dispatcher.add_handler(CommandHandler("test", self.test))        
+        self.dispatcher.add_handler(CommandHandler("test", self.test_command))
         
         # Обработчик регистрации
         registration_handler = ConversationHandler(
@@ -88,9 +108,9 @@ class ConferenceBot:
             states={
                 REGISTRATION: [MessageHandler(Filters.text & ~Filters.command, self.registration_name)],
                 OCCUPATION: [MessageHandler(Filters.text & ~Filters.command, self.registration_occupation)],
-                LEVEL: [MessageHandler(Filters.text & ~Filters.command, self.registration_level)],
+                LEVEL: [CallbackQueryHandler(self.registration_level, pattern='^level_')],
                 COMPANY: [MessageHandler(Filters.text & ~Filters.command, self.registration_company)],
-                CONSENT: [CallbackQueryHandler(self.registration_consent)]
+                CONSENT: [CallbackQueryHandler(self.registration_consent, pattern='^consent_')]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_registration)]
         )
@@ -111,21 +131,12 @@ class ConferenceBot:
         # Обработчик ошибок
         self.dispatcher.add_error_handler(self.error_handler)
     
-    def test(self, update: Update, context: CallbackContext):
-        """Тестовая команда."""
-        logging.info("Получена команда /test")
-        update.message.reply_text("Тестовое сообщение")
-        logging.info("Тестовое сообщение отправлено")
-        self.updater.dispatcher.add_handler(CommandHandler("test", self.test))
-
-    
     def start(self, update: Update, context: CallbackContext):
         """Обработчик команды /start."""
-        logging.info("Получена команда /start")
         user_id = update.effective_user.id
-        logging.info(f"ID пользователя: {user_id}")
         user = self.db.get_user(user_id)
-        logging.info(f"Данные пользователя: {user}")
+        
+        logger.info(f"Команда /start от пользователя {user_id}")
         
         if user:
             # Пользователь уже зарегистрирован
@@ -134,16 +145,16 @@ class ConferenceBot:
         else:
             # Новый пользователь, предлагаем регистрацию
             keyboard = [
-                [InlineKeyboardButton("Зарегистрироваться", callback_data="register")]
+                [InlineKeyboardButton("✨ Зарегистрироваться ✨", callback_data="register")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            logging.info("Отправляю приветственное сообщение")
             update.message.reply_text(
-                "Добро пожаловать в Лабораторию от Т-Банка на Aha'25! Для использования бота необходимо зарегистрироваться.",
+                "👋 Привет! Добро пожаловать в Лабораторию Т-Банка на Aha'25! 🎉\n\n"
+                "Я ваш персональный помощник, который сделает ваше участие максимально комфортным и интересным. "
+                "Для начала работы, пожалуйста, пройдите быструю регистрацию.",
                 reply_markup=reply_markup
             )
-            logging.info("Приветственное сообщение отправлено")
     
     def help_command(self, update: Update, context: CallbackContext):
         """Обработчик команды /help."""
@@ -152,7 +163,8 @@ class ConferenceBot:
         
         if not user:
             update.message.reply_text(
-                "Для начала работы с ботом используйте команду /start и пройдите регистрацию."
+                "🔍 Для начала работы с ботом используйте команду /start и пройдите быструю регистрацию. "
+                "Это займет всего минуту! 😊"
             )
             return
         
@@ -161,10 +173,16 @@ class ConferenceBot:
         
         update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
     
+    def test_command(self, update: Update, context: CallbackContext):
+        """Тестовая команда для проверки работоспособности бота."""
+        logger.info("Получена команда /test")
+        update.message.reply_text("✅ Отлично! Бот работает и готов помогать вам на конференции! 🚀")
+        logger.info("Тестовое сообщение отправлено")
+    
     def admin_command(self, update: Update, context: CallbackContext):
         """Обработчик команды /admin."""
         update.message.reply_text(
-            "Введите код администратора для доступа к панели управления:"
+            "🔐 Пожалуйста, введите код администратора для доступа к панели управления:"
         )
         return ADMIN_MENU
     
@@ -173,8 +191,21 @@ class ConferenceBot:
         query = update.callback_query
         query.answer()
         
+        # Проверяем, не зарегистрирован ли уже пользователь
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if user:
+            role = user.get('role', 'guest')
+            query.edit_message_text(
+                f"✅ Вы уже зарегистрированы как {self.role_manager.get_role_name(role)}. "
+                f"Используйте меню ниже для навигации по функциям бота."
+            )
+            self._show_role_menu(update, context, role)
+            return ConversationHandler.END
+        
         query.edit_message_text(
-            "Пожалуйста, введите ваше имя и фамилию:"
+            "👤 Давайте познакомимся! Пожалуйста, введите ваше имя и фамилию:"
         )
         return REGISTRATION
     
@@ -183,7 +214,7 @@ class ConferenceBot:
         full_name = update.message.text.strip()
         if len(full_name.split()) < 2:
             update.message.reply_text(
-                "Пожалуйста, введите и имя, и фамилию, разделенные пробелом:"
+                "🙏 Пожалуйста, введите и имя, и фамилию, разделенные пробелом:"
             )
             return REGISTRATION
         
@@ -192,8 +223,10 @@ class ConferenceBot:
         context.user_data['first_name'] = name_parts[0]
         context.user_data['last_name'] = name_parts[1]
         
+        logger.info(f"Регистрация: получено имя и фамилия: {full_name}")
+        
         update.message.reply_text(
-            "Спасибо! Теперь укажите вашу должность:"
+            f"👍 Отлично, {name_parts[0]}! Теперь укажите вашу должность:"
         )
         return OCCUPATION
     
@@ -202,18 +235,20 @@ class ConferenceBot:
         occupation = update.message.text.strip()
         context.user_data['occupation'] = occupation
         
+        logger.info(f"Регистрация: получена должность: {occupation}")
+        
         # Предлагаем выбрать уровень
         keyboard = [
-            [InlineKeyboardButton("Junior", callback_data="level_junior")],
-            [InlineKeyboardButton("Middle", callback_data="level_middle")],
-            [InlineKeyboardButton("Senior", callback_data="level_senior")],
-            [InlineKeyboardButton("Lead", callback_data="level_lead")],
-            [InlineKeyboardButton("Другое", callback_data="level_other")]
+            [InlineKeyboardButton("🌱 Junior", callback_data="level_junior")],
+            [InlineKeyboardButton("🌿 Middle", callback_data="level_middle")],
+            [InlineKeyboardButton("🌲 Senior", callback_data="level_senior")],
+            [InlineKeyboardButton("🌳 Lead", callback_data="level_lead")],
+            [InlineKeyboardButton("🔄 Другое", callback_data="level_other")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         update.message.reply_text(
-            "Укажите ваш уровень:",
+            "📊 Выберите ваш профессиональный уровень:",
             reply_markup=reply_markup
         )
         return LEVEL
@@ -226,8 +261,10 @@ class ConferenceBot:
         level = query.data.replace("level_", "")
         context.user_data['level'] = level
         
+        logger.info(f"Регистрация: выбран уровень: {level}")
+        
         query.edit_message_text(
-            "Укажите название вашей компании:"
+            "🏢 Укажите название вашей компании:"
         )
         return COMPANY
     
@@ -236,15 +273,17 @@ class ConferenceBot:
         company = update.message.text.strip()
         context.user_data['company'] = company
         
+        logger.info(f"Регистрация: указана компания: {company}")
+        
         # Запрашиваем согласие на обработку данных
         keyboard = [
-            [InlineKeyboardButton("Согласен", callback_data="consent_yes")],
-            [InlineKeyboardButton("Не согласен", callback_data="consent_no")]
+            [InlineKeyboardButton("✅ Согласен", callback_data="consent_yes")],
+            [InlineKeyboardButton("❌ Не согласен", callback_data="consent_no")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         update.message.reply_text(
-            "Для завершения регистрации необходимо ваше согласие на обработку персональных данных.",
+            "📝 Для завершения регистрации необходимо ваше согласие на обработку персональных данных.",
             reply_markup=reply_markup
         )
         return CONSENT
@@ -256,8 +295,9 @@ class ConferenceBot:
         
         if query.data == "consent_no":
             query.edit_message_text(
-                "К сожалению, без согласия на обработку данных регистрация невозможна. "
-                "Вы можете начать регистрацию заново с помощью команды /start."
+                "😔 К сожалению, без согласия на обработку данных регистрация невозможна. "
+                "Вы можете начать регистрацию заново с помощью команды /start, когда будете готовы."
+                "Либо вы можете подойти к стойке регистрации и получить бумажный бланк для участия в наших активностях"
             )
             return ConversationHandler.END
         
@@ -274,37 +314,56 @@ class ConferenceBot:
             'points': 0,
             'consent': True,
             'is_blocked': False,
-            'is_candidate': False
+            'is_candidate': False,
+            'registration_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        self.db.create_user(user_data)
-        
-        # Генерируем QR-код для пользователя
-        qr_path = self.qr_generator.generate_user_qr(update.effective_user.id)
-        
-        query.edit_message_text(
-            f"Регистрация успешно завершена! Ваша роль: Гость\n\n"
-            f"Вам начислено 0 баллов. Вы можете получать баллы за посещение стендов и участие в активностях.\n\n"
-            f"Используйте меню для навигации по функциям бота."
-        )
-        
-        # Отправляем QR-код пользователю
-        with open(qr_path, 'rb') as qr_file:
-            context.bot.send_photo(
-                chat_id=update.effective_user.id,
-                photo=qr_file,
-                caption="Ваш персональный QR-код. Покажите его стендистам для получения баллов."
+        try:
+            self.db.create_user(user_data)
+            logger.info(f"Пользователь {update.effective_user.id} успешно зарегистрирован")
+            
+            # Начисляем баллы за регистрацию
+            self.points_system.add_points(
+                update.effective_user.id, 
+                10, 
+                'registration', 
+                f"reg_{update.effective_user.id}"
             )
-        
-        # Показываем меню гостя
-        self._show_guest_menu(update, context)
+            
+            # Генерируем QR-код для пользователя
+            qr_path = self.qr_generator.generate_user_qr(update.effective_user.id)
+            
+            query.edit_message_text(
+                f"🎉 Поздравляем! Регистрация успешно завершена! 🎉\n\n"
+                f"Ваша роль: ✨ Гость ✨\n\n"
+                f"🎁 Вам начислено 10 бонусных баллов за регистрацию! Вы можете получать дополнительные баллы "
+                f"за посещение стендов и участие в активностях конференции.\n\n"
+                f"Используйте меню ниже для навигации по всем возможностям бота."
+            )
+            
+            # Отправляем QR-код пользователю
+            with open(qr_path, 'rb') as qr_file:
+                context.bot.send_photo(
+                    chat_id=update.effective_user.id,
+                    photo=qr_file,
+                    caption="🔑 Ваш персональный QR-код. Покажите его стендистам для получения баллов и доступа к специальным предложениям!"
+                )
+            
+            # Показываем меню гостя
+            self._show_guest_menu(update, context)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при регистрации пользователя: {e}")
+            query.edit_message_text(
+                "😓 Произошла небольшая техническая заминка при регистрации. Пожалуйста, попробуйте позже или обратитесь к ребятам на стенде регистрации зала Лаборатории Т."
+            )
         
         return ConversationHandler.END
     
     def cancel_registration(self, update: Update, context: CallbackContext):
         """Отмена процесса регистрации."""
         update.message.reply_text(
-            "Регистрация отменена. Вы можете начать заново с помощью команды /start."
+            "🔄 Регистрация отменена. Вы можете начать заново с помощью команды /start в любое удобное время."
         )
         return ConversationHandler.END
     
@@ -319,7 +378,14 @@ class ConferenceBot:
         
         if not user:
             query.edit_message_text(
-                "Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+                "👋 Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+            )
+            return
+        
+        # Проверяем, не заблокирован ли пользователь
+        if user.get('is_blocked', False):
+            query.edit_message_text(
+                "⛔ Ваш аккаунт временно заблокирован. Пожалуйста, обратитесь к niksfok для разблокировки."
             )
             return
         
@@ -342,174 +408,346 @@ class ConferenceBot:
             elif callback_data.startswith("order_merch_"):
                 merch_id = callback_data.replace("order_merch_", "")
                 self._order_merch(update, context, merch_id)
+            elif callback_data == "view_program":
+                self._show_program(update, context)
+            elif callback_data == "subscribe":
+                self._show_subscription_options(update, context)
+            elif callback_data.startswith("subscribe_to_"):
+                subscription_type = callback_data.replace("subscribe_to_", "")
+                self._subscribe_to(update, context, subscription_type)
+            elif callback_data.startswith("unsubscribe_from_"):
+                subscription_type = callback_data.replace("unsubscribe_from_", "")
+                self._unsubscribe_from(update, context, subscription_type)
+            elif callback_data.startswith("view_stand_"):
+                stand_id = callback_data.replace("view_stand_", "")
+                self._show_stand_details(update, context, stand_id)
         
         # Действия для стендистов
         elif role == 'standist':
             if callback_data == "scan_qr":
-                query.edit_message_text(
-                    "Отправьте фотографию QR-кода посетителя для начисления баллов."
-                )
+                self._prompt_qr_scan(update, context)
             elif callback_data == "view_stand_stats":
                 self._show_stand_statistics(update, context)
+            elif callback_data == "view_my_stand":
+                self._show_my_stand(update, context)
+            elif callback_data == "view_points":
+                self._show_points_balance(update, context)
+            elif callback_data == "view_merch":
+                self._show_merch_catalog(update, context)
+            elif callback_data.startswith("order_merch_"):
+                merch_id = callback_data.replace("order_merch_", "")
+                self._order_merch(update, context, merch_id)
+            elif callback_data == "edit_stand":
+                self._edit_stand_prompt(update, context)
+            elif callback_data == "view_visitors":
+                self._show_stand_visitors(update, context)
         
         # Действия для HR
         elif role == 'hr':
             if callback_data == "mark_candidate":
-                query.edit_message_text(
-                    "Отправьте фотографию QR-кода кандидата для отметки."
-                )
+                self._prompt_candidate_scan(update, context)
             elif callback_data == "view_candidates":
                 self._show_candidates_list(update, context)
+            elif callback_data == "export_candidates":
+                self._export_candidates(update, context)
+            elif callback_data == "view_points":
+                self._show_points_balance(update, context)
+            elif callback_data == "view_merch":
+                self._show_merch_catalog(update, context)
+            elif callback_data.startswith("order_merch_"):
+                merch_id = callback_data.replace("order_merch_", "")
+                self._order_merch(update, context, merch_id)
+            elif callback_data.startswith("view_candidate_"):
+                candidate_id = callback_data.replace("view_candidate_", "")
+                self._show_candidate_details(update, context, candidate_id)
             elif callback_data.startswith("add_note_"):
                 candidate_id = callback_data.replace("add_note_", "")
-                context.user_data['candidate_id'] = candidate_id
-                query.edit_message_text(
-                    "Введите заметку о кандидате:"
-                )
-                return HR_MENU
+                self._prompt_candidate_note(update, context, candidate_id)
         
         # Действия для администраторов
         elif role == 'admin':
             if callback_data == "manage_users":
-                self._show_users_list(update, context)
+                self._show_users_management(update, context)
             elif callback_data == "manage_stands":
                 self._show_stands_management(update, context)
             elif callback_data == "manage_merch":
                 self._show_merch_management(update, context)
             elif callback_data == "view_statistics":
-                self._show_admin_statistics(update, context)
-            elif callback_data == "send_broadcast":
-                query.edit_message_text(
-                    "Введите текст сообщения для рассылки всем пользователям:"
-                )
-                return ADMIN_MENU
+                self._show_statistics(update, context)
+            elif callback_data == "broadcast_message":
+                self._prompt_broadcast_message(update, context)
+            elif callback_data == "confirm_broadcast":
+                self._confirm_broadcast(update, context)
+            elif callback_data == "cancel_broadcast":
+                self._cancel_broadcast(update, context)
+            elif callback_data.startswith("change_role_"):
+                parts = callback_data.replace("change_role_", "").split("_")
+                user_id = int(parts[0])
+                new_role = parts[1]
+                self._change_user_role(update, context, user_id, new_role)
+            elif callback_data.startswith("block_user_"):
+                user_id = int(callback_data.replace("block_user_", ""))
+                self._block_user(update, context, user_id)
+            elif callback_data.startswith("unblock_user_"):
+                user_id = int(callback_data.replace("unblock_user_", ""))
+                self._unblock_user(update, context, user_id)
+            elif callback_data.startswith("delete_user_"):
+                user_id = int(callback_data.replace("delete_user_", ""))
+                self._delete_user(update, context, user_id)
+            elif callback_data == "add_stand":
+                self._add_stand_prompt(update, context)
+            elif callback_data.startswith("edit_stand_"):
+                stand_id = callback_data.replace("edit_stand_", "")
+                self._edit_stand_prompt(update, context, stand_id)
+            elif callback_data.startswith("delete_stand_"):
+                stand_id = callback_data.replace("delete_stand_", "")
+                self._delete_stand(update, context, stand_id)
+            elif callback_data == "add_merch":
+                self._add_merch_prompt(update, context)
+            elif callback_data.startswith("edit_merch_"):
+                merch_id = callback_data.replace("edit_merch_", "")
+                self._edit_merch_prompt(update, context, merch_id)
+            elif callback_data.startswith("delete_merch_"):
+                merch_id = callback_data.replace("delete_merch_", "")
+                self._delete_merch(update, context, merch_id)
     
     def handle_photo(self, update: Update, context: CallbackContext):
-        """Обработка фотографий (для сканирования QR-кодов)."""
+        """Обработка фотографий (сканирование QR-кодов)."""
         user_id = update.effective_user.id
         user = self.db.get_user(user_id)
         
         if not user:
             update.message.reply_text(
-                "Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+                "👋 Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
             )
             return
         
+        # Проверяем, не заблокирован ли пользователь
+        if user.get('is_blocked', False):
+            update.message.reply_text(
+                "⛔ Ваш аккаунт временно заблокирован. Пожалуйста, обратитесь к организаторам конференции для разблокировки."
+            )
+            return
+        
+        # Получаем роль пользователя
         role = user.get('role', 'guest')
         
-        # Сохраняем фото
+        # Обновляем время последней активности пользователя
+        self.db.update_user(user_id, {'last_activity': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
+        
+        # Получаем фото с наилучшим качеством
         photo_file = update.message.photo[-1].get_file()
-        photo_path = f"data/qr_scans/{user_id}_{photo_file.file_id}.jpg"
-        photo_file.download(photo_path)
+        photo_path = f"temp/{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
         
-        # Пытаемся распознать QR-код
-        qr_data = self.qr_generator.decode_qr(photo_path)
+        # Создаем директорию, если она не существует
+        os.makedirs(os.path.dirname(photo_path), exist_ok=True)
         
-        if not qr_data:
+        try:
+            # Скачиваем фото
+            photo_file.download(photo_path)
+            
+            # Сканируем QR-код
+            qr_data = self.qr_generator.scan_qr_code(photo_path)
+            
+            # Удаляем временный файл
+            os.remove(photo_path)
+            
+            if not qr_data:
+                update.message.reply_text(
+                    "🔍 QR-код не обнаружен на изображении. Пожалуйста, убедитесь, что QR-код хорошо виден и попробуйте снова."
+                )
+                return
+            
+            logger.info(f"Отсканирован QR-код: {qr_data}")
+            
+            # Обработка QR-кода в зависимости от роли пользователя
+            if role == 'standist':
+                # Стендист сканирует QR-код посетителя для начисления баллов
+                try:
+                    scanned_user_id = int(qr_data)
+                    scanned_user = self.db.get_user(scanned_user_id)
+                    
+                    if not scanned_user:
+                        update.message.reply_text(
+                            "❓ Пользователь не найден. Возможно, QR-код недействителен или посетитель не зарегистрирован в системе."
+                        )
+                        return
+                    
+                    # Получаем стенд стендиста
+                    stand = self.db.get_stand_by_owner(user_id)
+                    
+                    if not stand:
+                        update.message.reply_text(
+                            "⚠️ У вас нет привязанного стенда. Пожалуйста, обратитесь к администратору."
+                        )
+                        return
+                    
+                    stand_id = stand.get('stand_id')
+                    
+                    # Проверяем, посещал ли пользователь этот стенд ранее
+                    if self.points_system.check_stand_visit(scanned_user_id, stand_id):
+                        update.message.reply_text(
+                            f"ℹ️ Пользователь {scanned_user.get('first_name')} {scanned_user.get('last_name')} "
+                            f"уже посещал ваш стенд и получил баллы ранее."
+                        )
+                        return
+                    
+                    # Начисляем баллы за посещение стенда
+                    points = stand.get('points_reward', 10)
+                    if self.points_system.add_points(scanned_user_id, points, 'stand_visit', stand_id):
+                        # Увеличиваем счетчик посещений стенда
+                        self.db.increment_stand_visits(stand_id)
+                        
+                        update.message.reply_text(
+                            f"🎉 Отлично! Пользователю {scanned_user.get('first_name')} {scanned_user.get('last_name')} "
+                            f"успешно начислено {points} баллов за посещение вашего стенда!"
+                        )
+                    else:
+                        update.message.reply_text(
+                            "😓 Не удалось начислить баллы. Пожалуйста, попробуйте позже или обратитесь к администратору."
+                        )
+
+                    # Отмечаем пользователя как перспективного кандидата для дальнейшей проработки
+                    if self.candidate_manager.mark_as_candidate(scanned_user_id, user_id):
+                        update.message.reply_text(
+                            f"✅ Отлично! Пользователь {scanned_user.get('first_name')} {scanned_user.get('last_name')} "
+                            f"успешно отмечен как перспективный кандидат"
+                        )
+                        
+                        # Предлагаем добавить заметку о кандидате
+                        keyboard = [
+                            [InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{scanned_user_id}")],
+                            [InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        update.message.reply_text(
+                            "Хотите добавить заметку о госте?",
+                            reply_markup=reply_markup
+                        )
+                    else:
+                        update.message.reply_text(
+                            "😓 Не удалось отметить пользователя как кандидата. Пожалуйста, попробуйте позже или обратитесь к администратору"
+                        )
+                
+                except ValueError:
+                    update.message.reply_text(
+                        "⚠️ Недействительный QR-код. QR-код должен содержать ID пользователя."
+                    )
+            
+            elif role == 'hr':
+                # HR сканирует QR-код кандидата для отметки
+                try:
+                    scanned_user_id = int(qr_data)
+                    scanned_user = self.db.get_user(scanned_user_id)
+                    
+                    if not scanned_user:
+                        update.message.reply_text(
+                            "❓ Пользователь не найден. Возможно, QR-код недействителен или посетитель не зарегистрирован в системе."
+                        )
+                        return
+                    
+                    # Отмечаем пользователя как кандидата
+                    if self.candidate_manager.mark_as_candidate(scanned_user_id, user_id):
+                        update.message.reply_text(
+                            f"✅ Отлично! Пользователь {scanned_user.get('first_name')} {scanned_user.get('last_name')} "
+                            f"успешно отмечен как потенциальный кандидат."
+                        )
+                        
+                        # Предлагаем добавить заметку о кандидате
+                        keyboard = [
+                            [InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{scanned_user_id}")],
+                            [InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        update.message.reply_text(
+                            "Хотите добавить заметку о кандидате?",
+                            reply_markup=reply_markup
+                        )
+                    else:
+                        update.message.reply_text(
+                            "😓 Не удалось отметить пользователя как кандидата. Пожалуйста, попробуйте позже или обратитесь к администратору"
+                        )
+                
+                except ValueError:
+                    update.message.reply_text(
+                        "⚠️ Недействительный QR-код. QR-код должен содержать ID пользователя."
+                    )
+            
+            else:
+                # Обычный пользователь сканирует QR-код
+                if qr_data.startswith("stand:"):
+                    # QR-код стенда
+                    stand_id = qr_data.replace("stand:", "")
+                    stand = self.db.get_stand(stand_id)
+                    
+                    if not stand:
+                        update.message.reply_text(
+                            "❓ Стенд не найден. Возможно, QR-код недействителен или устарел."
+                        )
+                        return
+                    
+                    update.message.reply_text(
+                        f"🎯 Вы отсканировали QR-код стенда: {stand.get('name')}\n\n"
+                        f"{stand.get('description')}\n\n"
+                        f"📱 Покажите свой персональный QR-код стендисту для получения бонусных баллов!"
+                    )
+                
+                elif qr_data.startswith("merch:"):
+                    # QR-код мерча
+                    merch_id = qr_data.replace("merch:", "")
+                    merch = self.db.get_merch(merch_id)
+                    
+                    if not merch:
+                        update.message.reply_text(
+                            "❓ Мерч не найден. Возможно, QR-код недействителен или устарел."
+                        )
+                        return
+                    
+                    # Показываем информацию о мерче
+                    keyboard = [
+                        [InlineKeyboardButton("🛍️ Заказать", callback_data=f"order_merch_{merch_id}")],
+                        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    update.message.reply_text(
+                        f"🎁 Вы отсканировали QR-код мерча: {merch.get('name')}\n\n"
+                        f"{merch.get('description')}\n\n"
+                        f"💰 Стоимость: {merch.get('points_cost')} баллов\n"
+                        f"📦 Осталось: {merch.get('quantity_left')} шт.",
+                        reply_markup=reply_markup
+                    )
+                
+                elif qr_data.startswith("event:"):
+                    # QR-код события
+                    event_id = qr_data.replace("event:", "")
+                    event = self.db.get_event(event_id)
+                    
+                    if not event:
+                        update.message.reply_text(
+                            "❓ Событие не найдено. Возможно, QR-код недействителен или устарел."
+                        )
+                        return
+                    
+                    update.message.reply_text(
+                        f"📅 Вы отсканировали QR-код события: {event.get('name')}\n\n"
+                        f"{event.get('description')}\n\n"
+                        f"⏰ Время: {event.get('start_time')} - {event.get('end_time')}\n"
+                        f"📍 Место: {event.get('location')}"
+                    )
+                
+                else:
+                    # Неизвестный формат QR-кода
+                    update.message.reply_text(
+                        "❓ Неизвестный формат QR-кода. Пожалуйста, убедитесь, что вы сканируете правильный QR-код"
+                    )
+        
+        except Exception as e:
+            logger.error(f"Ошибка при обработке фото: {e}")
             update.message.reply_text(
-                "QR-код не распознан. Пожалуйста, попробуйте еще раз с более четким изображением."
-            )
-            return
-        
-        # Обрабатываем данные QR-кода в зависимости от роли пользователя
-        if role == 'standist':
-            # Стендист сканирует QR-код посетителя для начисления баллов
-            try:
-                scanned_user_id = int(qr_data)
-                scanned_user = self.db.get_user(scanned_user_id)
-                
-                if not scanned_user:
-                    update.message.reply_text(
-                        "Пользователь не найден. QR-код может быть недействительным."
-                    )
-                    return
-                
-                # Получаем информацию о стенде
-                stand = self.db.get_stand_by_owner(user_id)
-                
-                if not stand:
-                    update.message.reply_text(
-                        "У вас нет зарегистрированного стенда. Обратитесь к администратору."
-                    )
-                    return
-                
-                # Проверяем, не посещал ли пользователь этот стенд ранее
-                if self.points_system.check_stand_visit(scanned_user_id, stand['stand_id']):
-                    update.message.reply_text(
-                        f"Пользователь {scanned_user['first_name']} {scanned_user['last_name']} "
-                        f"уже посещал ваш стенд ранее."
-                    )
-                    return
-                
-                # Начисляем баллы за посещение стенда
-                points = 10  # Стандартное количество баллов за посещение стенда
-                self.points_system.add_points(
-                    scanned_user_id, 
-                    points, 
-                    "stand_visit", 
-                    stand['stand_id']
-                )
-                
-                # Увеличиваем счетчик посещений стенда
-                self.db.increment_stand_visits(stand['stand_id'])
-                
-                update.message.reply_text(
-                    f"Пользователю {scanned_user['first_name']} {scanned_user['last_name']} "
-                    f"начислено {points} баллов за посещение вашего стенда."
-                )
-                
-                # Отправляем уведомление пользователю
-                context.bot.send_message(
-                    chat_id=scanned_user_id,
-                    text=f"Вам начислено {points} баллов за посещение стенда \"{stand['name']}\"."
-                )
-                
-            except ValueError:
-                update.message.reply_text(
-                    "Некорректный QR-код. Пожалуйста, убедитесь, что сканируете QR-код посетителя."
-                )
-        
-        elif role == 'hr':
-            # HR сканирует QR-код для отметки кандидата
-            try:
-                scanned_user_id = int(qr_data)
-                scanned_user = self.db.get_user(scanned_user_id)
-                
-                if not scanned_user:
-                    update.message.reply_text(
-                        "Пользователь не найден. QR-код может быть недействительным."
-                    )
-                    return
-                
-                # Отмечаем пользователя как кандидата
-                self.candidate_manager.mark_as_candidate(scanned_user_id, user_id)
-                
-                update.message.reply_text(
-                    f"Пользователь {scanned_user['first_name']} {scanned_user['last_name']} "
-                    f"отмечен как потенциальный кандидат."
-                )
-                
-                # Предлагаем добавить заметку о кандидате
-                keyboard = [
-                    [InlineKeyboardButton("Добавить заметку", callback_data=f"add_note_{scanned_user_id}")],
-                    [InlineKeyboardButton("Вернуться в меню", callback_data="main_menu")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                update.message.reply_text(
-                    "Хотите добавить заметку о кандидате?",
-                    reply_markup=reply_markup
-                )
-                
-            except ValueError:
-                update.message.reply_text(
-                    "Некорректный QR-код. Пожалуйста, убедитесь, что сканируете QR-код посетителя."
-                )
-        
-        else:
-            # Для других ролей сканирование QR-кодов может иметь другую логику
-            update.message.reply_text(
-                "Функция сканирования QR-кодов недоступна для вашей роли."
+                "😓 Произошла ошибка при обработке фотографии. Пожалуйста, попробуйте еще раз или обратитесь к технической поддержке."
             )
     
     def handle_message(self, update: Update, context: CallbackContext):
@@ -519,48 +757,68 @@ class ConferenceBot:
         
         if not user:
             update.message.reply_text(
-                "Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+                "👋 Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
             )
             return
         
-        # Обработка сообщений в зависимости от текущего состояния и роли пользователя
-        if context.user_data.get('state') == 'waiting_for_broadcast_text' and user.get('role') == 'admin':
+        # Проверяем, не заблокирован ли пользователь
+        if user.get('is_blocked', False):
+            update.message.reply_text(
+                "⛔ Ваш аккаунт временно заблокирован. Пожалуйста, обратитесь к администратору для разблокировки."
+            )
+            return
+        
+        # Обновляем время последней активности пользователя
+        self.db.update_user(user_id, {'last_activity': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
+        
+        # Обработка сообщений в зависимости от текущего состояния
+        if context.user_data.get('state') == 'waiting_broadcast_text':
             # Администратор вводит текст для рассылки
             broadcast_text = update.message.text
-            self.broadcaster.send_broadcast(context.bot, broadcast_text)
+            
+            # Запрашиваем подтверждение
+            keyboard = [
+                [InlineKeyboardButton("✅ Отправить", callback_data="confirm_broadcast")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel_broadcast")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            context.user_data['broadcast_text'] = broadcast_text
             
             update.message.reply_text(
-                "Сообщение отправлено всем пользователям."
+                f"📢 Текст сообщения для рассылки:\n\n{broadcast_text}\n\nПодтвердите отправку:",
+                reply_markup=reply_markup
             )
             
-            # Сбрасываем состояние
-            context.user_data.pop('state', None)
-            
-            # Возвращаем меню администратора
-            self._show_admin_menu(update, context)
-            
-        elif context.user_data.get('state') == 'waiting_for_candidate_note' and user.get('role') == 'hr':
+            context.user_data['state'] = 'waiting_broadcast_confirmation'
+        
+        elif context.user_data.get('state') == 'waiting_candidate_note':
             # HR вводит заметку о кандидате
             note_text = update.message.text
             candidate_id = context.user_data.get('candidate_id')
             
-            if candidate_id:
-                self.candidate_manager.add_note(candidate_id, user_id, note_text)
-                
+            if not candidate_id:
                 update.message.reply_text(
-                    "Заметка о кандидате добавлена."
+                    "😓 Произошла ошибка. Пожалуйста, попробуйте снова или обратитесь к технической поддержке."
                 )
-                
-                # Сбрасываем состояние
-                context.user_data.pop('state', None)
-                context.user_data.pop('candidate_id', None)
-                
-                # Возвращаем меню HR
-                self._show_hr_menu(update, context)
+                return
+            
+            # Добавляем заметку о кандидате
+            if self.candidate_manager.add_note(int(candidate_id), user_id, note_text):
+                update.message.reply_text(
+                    "✅ Заметка о кандидате успешно добавлена!"
+                )
             else:
                 update.message.reply_text(
-                    "Ошибка: не указан ID кандидата. Пожалуйста, начните процесс заново."
+                    "😓 Не удалось добавить заметку. Пожалуйста, попробуйте позже или обратитесь к технической поддержке."
                 )
+            
+            # Сбрасываем состояние
+            context.user_data.pop('state', None)
+            context.user_data.pop('candidate_id', None)
+            
+            # Показываем меню HR
+            self._show_role_menu(update, context, 'hr')
         
         else:
             # Обычное сообщение, показываем меню в зависимости от роли
@@ -568,33 +826,49 @@ class ConferenceBot:
             self._show_role_menu(update, context, role)
     
     def unknown_command(self, update: Update, context: CallbackContext):
-        """Обработка неизвестных команд."""
+        """Обработчик неизвестных команд."""
         update.message.reply_text(
-            "Извините, я не знаю такой команды. Используйте /help для получения списка доступных команд."
+            "🤔 Я не знаю такой команды. Используйте /help для получения списка доступных команд или меню для навигации."
         )
     
     def error_handler(self, update: Update, context: CallbackContext):
         """Обработчик ошибок."""
-        logger.error(f"Ошибка: {context.error}")
+        logger.error(f"Произошла ошибка: {context.error}")
         
         # Логируем ошибку в базу данных
         error_data = {
-            'timestamp': context.error,
-            'user_id': update.effective_user.id if update else None,
-            'error_type': type(context.error).__name__,
             'error_message': str(context.error),
-            'resolved': False
+            'traceback': traceback.format_exc(),
+            'update': update.to_dict() if update else None
         }
+        
         self.db.log_error(error_data)
         
         # Отправляем сообщение пользователю
-        if update:
-            update.effective_message.reply_text(
-                "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже."
+        if update and update.effective_chat:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="😓 Произошла небольшая техническая заминка. Наши специалисты уже работают над решением. Пожалуйста, попробуйте позже."
             )
     
-    def _show_role_menu(self, update: Update, context: CallbackContext, role: str):
+    def _show_role_menu(self, update: Update, context: CallbackContext):
         """Показывает меню в зависимости от роли пользователя."""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if not user:
+            if update.callback_query:
+                update.callback_query.edit_message_text(
+                    "👋 Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+                )
+            else:
+                update.message.reply_text(
+                    "👋 Для начала работы с ботом необходимо зарегистрироваться. Используйте команду /start."
+                )
+            return
+        
+        role = user.get('role', 'guest')
+        
         if role == 'guest':
             self._show_guest_menu(update, context)
         elif role == 'standist':
@@ -607,511 +881,194 @@ class ConferenceBot:
     def _show_guest_menu(self, update: Update, context: CallbackContext):
         """Показывает меню гостя."""
         keyboard = [
-            [InlineKeyboardButton("Каталог мерча", callback_data="view_merch")],
-            [InlineKeyboardButton("Мои баллы", callback_data="view_points")],
-            [InlineKeyboardButton("Список стендов", callback_data="view_stands")],
-            [InlineKeyboardButton("Подписки на уведомления", callback_data="manage_subscriptions")]
+            [InlineKeyboardButton("📅 Программа конференции", callback_data="view_program")],
+            [InlineKeyboardButton("💰 Мои баллы", callback_data="view_points")],
+            # [InlineKeyboardButton("🎁 Каталог мерча", callback_data="view_merch")],
+            [InlineKeyboardButton("🏢 Список стендов", callback_data="view_stands")],
+            [InlineKeyboardButton("🔔 Подписаться на обновления", callback_data="subscribe")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        message_text = "🌟 Главное меню гостя зала Т-Лаборатории 🌟\n\nВыберите интересующий вас раздел:"
+        
         if update.callback_query:
             update.callback_query.edit_message_text(
-                "Меню гостя. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
         else:
             update.message.reply_text(
-                "Меню гостя. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
     
     def _show_standist_menu(self, update: Update, context: CallbackContext):
         """Показывает меню стендиста."""
         keyboard = [
-            [InlineKeyboardButton("Сканировать QR-код посетителя", callback_data="scan_qr")],
-            [InlineKeyboardButton("Статистика посещений", callback_data="view_stand_stats")],
-            [InlineKeyboardButton("Мой стенд", callback_data="view_my_stand")]
+            [InlineKeyboardButton("📷 Сканировать QR-код", callback_data="scan_qr")],
+            [InlineKeyboardButton("👤 Отметить гостя", callback_data="mark_candidate")],
+            [InlineKeyboardButton("📊 Статистика стенда", callback_data="view_stand_stats")],
+            [InlineKeyboardButton("🏢 Мой стенд", callback_data="view_my_stand")]
+            #[InlineKeyboardButton("💰 Мои баллы", callback_data="view_points")],
+            #[InlineKeyboardButton("🎁 Каталог мерча", callback_data="view_merch")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        message_text = "🌟 Главное меню стендиста 🌟\n\nВыберите интересующий вас раздел:"
+        
         if update.callback_query:
             update.callback_query.edit_message_text(
-                "Меню стендиста. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
         else:
             update.message.reply_text(
-                "Меню стендиста. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
     
     def _show_hr_menu(self, update: Update, context: CallbackContext):
         """Показывает меню HR."""
         keyboard = [
-            [InlineKeyboardButton("Отметить кандидата", callback_data="mark_candidate")],
-            [InlineKeyboardButton("Список кандидатов", callback_data="view_candidates")],
-            [InlineKeyboardButton("Экспорт данных", callback_data="export_candidates")]
+            [InlineKeyboardButton("👤 Отметить кандидата", callback_data="mark_candidate")],
+            [InlineKeyboardButton("📋 Список кандидатов", callback_data="view_candidates")]
+            # [InlineKeyboardButton("📤 Экспорт данных", callback_data="export_candidates")],
+            # [InlineKeyboardButton("💰 Мои баллы", callback_data="view_points")],
+            # [InlineKeyboardButton("🎁 Каталог мерча", callback_data="view_merch")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        message_text = "🌟 Главное меню HR-специалиста 🌟\n\nВыберите интересующий вас раздел:"
+        
         if update.callback_query:
             update.callback_query.edit_message_text(
-                "Меню HR. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
         else:
             update.message.reply_text(
-                "Меню HR. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
     
     def _show_admin_menu(self, update: Update, context: CallbackContext):
         """Показывает меню администратора."""
         keyboard = [
-            [InlineKeyboardButton("Управление пользователями", callback_data="manage_users")],
-            [InlineKeyboardButton("Управление стендами", callback_data="manage_stands")],
-            [InlineKeyboardButton("Управление мерчем", callback_data="manage_merch")],
-            [InlineKeyboardButton("Статистика", callback_data="view_statistics")],
-            [InlineKeyboardButton("Рассылка сообщений", callback_data="send_broadcast")]
+            [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+            [InlineKeyboardButton("🏢 Управление стендами", callback_data="manage_stands")],
+            [InlineKeyboardButton("🎁 Управление мерчем", callback_data="manage_merch")],
+            [InlineKeyboardButton("📊 Статистика и аналитика", callback_data="view_statistics")],
+            [InlineKeyboardButton("📢 Рассылка сообщений", callback_data="broadcast_message")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        message_text = "🌟 Панель администратора 🌟\n\nВыберите раздел для управления:"
+        
         if update.callback_query:
             update.callback_query.edit_message_text(
-                "Меню администратора. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
         else:
             update.message.reply_text(
-                "Меню администратора. Выберите действие:",
+                text=message_text,
                 reply_markup=reply_markup
             )
     
-    def _show_merch_catalog(self, update: Update, context: CallbackContext):
-        """Показывает каталог мерча."""
-        query = update.callback_query
-        
-        # Получаем список мерча из базы данных
-        merch_items = self.merch_manager.get_all_merch()
-        
-        if not merch_items:
-            query.edit_message_text(
-                "Каталог мерча пуст.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        # Формируем сообщение с мерчем
-        message_text = "Каталог мерча:\n\n"
-        keyboard = []
-        
-        for item in merch_items:
-            message_text += f"🎁 *{item['name']}*\n"
-            message_text += f"Описание: {item['description']}\n"
-            message_text += f"Стоимость: {item['points_cost']} баллов\n"
-            message_text += f"Осталось: {item['quantity_left']} шт.\n\n"
-            
-            keyboard.append([InlineKeyboardButton(
-                f"Заказать {item['name']} ({item['points_cost']} баллов)",
-                callback_data=f"order_merch_{item['merch_id']}"
-            )])
-        
-        keyboard.append([InlineKeyboardButton("Назад", callback_data="main_menu")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_points_balance(self, update: Update, context: CallbackContext):
-        """Показывает баланс баллов пользователя."""
-        query = update.callback_query
-        user_id = update.effective_user.id
-        
-        # Получаем информацию о пользователе
-        user = self.db.get_user(user_id)
-        points = user.get('points', 0)
-        
-        # Получаем историю транзакций
-        transactions = self.points_system.get_user_transactions(user_id)
-        
-        message_text = f"Ваш текущий баланс: *{points} баллов*\n\n"
-        
-        if transactions:
-            message_text += "История транзакций:\n\n"
-            for tx in transactions[:5]:  # Показываем только последние 5 транзакций
-                if tx['type'] == 'earn':
-                    message_text += f"➕ Получено {tx['amount']} баллов - {tx['reason']}\n"
-                else:
-                    message_text += f"➖ Потрачено {tx['amount']} баллов - {tx['reason']}\n"
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_stands_list(self, update: Update, context: CallbackContext):
-        """Показывает список стендов."""
-        query = update.callback_query
-        
-        # Получаем список стендов из базы данных
-        stands = self.db.get_all_stands()
-        
-        if not stands:
-            query.edit_message_text(
-                "Список стендов пуст.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        # Формируем сообщение со стендами
-        message_text = "Список стендов на конференции:\n\n"
-        
-        for stand in stands:
-            message_text += f"🏢 *{stand['name']}*\n"
-            message_text += f"Описание: {stand['description']}\n"
-            message_text += f"Расположение: {stand['location']}\n"
-            message_text += f"Посещений: {stand['visits']}\n\n"
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _order_merch(self, update: Update, context: CallbackContext, merch_id: str):
-        """Обрабатывает заказ мерча."""
-        query = update.callback_query
-        user_id = update.effective_user.id
-        
-        # Получаем информацию о мерче
-        merch = self.merch_manager.get_merch(merch_id)
-        
-        if not merch:
-            query.edit_message_text(
-                "Товар не найден.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="view_merch")]])
-            )
-            return
-        
-        # Проверяем наличие товара
-        if merch['quantity_left'] <= 0:
-            query.edit_message_text(
-                f"К сожалению, товар \"{merch['name']}\" закончился.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="view_merch")]])
-            )
-            return
-        
-        # Получаем информацию о пользователе
-        user = self.db.get_user(user_id)
-        points = user.get('points', 0)
-        
-        # Проверяем достаточно ли баллов
-        if points < merch['points_cost']:
-            query.edit_message_text(
-                f"У вас недостаточно баллов для заказа \"{merch['name']}\".\n"
-                f"Необходимо: {merch['points_cost']} баллов\n"
-                f"У вас: {points} баллов",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="view_merch")]])
-            )
-            return
-        
-        # Создаем заказ
-        order_result = self.merch_manager.create_order(user_id, merch_id)
-        
-        if order_result:
-            # Списываем баллы
-            self.points_system.subtract_points(
-                user_id,
-                merch['points_cost'],
-                "merch_order",
-                merch_id
-            )
-            
-            query.edit_message_text(
-                f"Вы успешно заказали \"{merch['name']}\"!\n"
-                f"С вашего счета списано {merch['points_cost']} баллов.\n"
-                f"Вы можете получить заказ на стойке выдачи мерча.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-        else:
-            query.edit_message_text(
-                "Произошла ошибка при оформлении заказа. Пожалуйста, попробуйте позже.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="view_merch")]])
-            )
-    
-    def _show_stand_statistics(self, update: Update, context: CallbackContext):
-        """Показывает статистику посещений стенда."""
-        query = update.callback_query
-        user_id = update.effective_user.id
-        
-        # Получаем информацию о стенде
-        stand = self.db.get_stand_by_owner(user_id)
-        
-        if not stand:
-            query.edit_message_text(
-                "У вас нет зарегистрированного стенда. Обратитесь к администратору.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        # Получаем статистику посещений
-        visits = stand.get('visits', 0)
-        
-        # Получаем последних посетителей
-        visitors = self.statistics_manager.get_stand_visitors(stand['stand_id'])
-        
-        message_text = f"Статистика стенда \"{stand['name']}\":\n\n"
-        message_text += f"Всего посещений: {visits}\n\n"
-        
-        if visitors:
-            message_text += "Последние посетители:\n"
-            for visitor in visitors[:5]:  # Показываем только последних 5 посетителей
-                user = self.db.get_user(visitor['user_id'])
-                if user:
-                    message_text += f"- {user['first_name']} {user['last_name']} ({user['company']})\n"
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup
-        )
-    
-    def _show_candidates_list(self, update: Update, context: CallbackContext):
-        """Показывает список кандидатов для HR."""
-        query = update.callback_query
-        user_id = update.effective_user.id
-        
-        # Получаем список кандидатов, отмеченных этим HR
-        candidates = self.candidate_manager.get_hr_candidates(user_id)
-        
-        if not candidates:
-            query.edit_message_text(
-                "У вас пока нет отмеченных кандидатов.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        # Формируем сообщение с кандидатами
-        message_text = "Ваши отмеченные кандидаты:\n\n"
-        keyboard = []
-        
-        for candidate in candidates:
-            user = self.db.get_user(candidate['candidate_id'])
-            if user:
-                message_text += f"👤 *{user['first_name']} {user['last_name']}*\n"
-                message_text += f"Должность: {user['occupation']}\n"
-                message_text += f"Уровень: {user['level']}\n"
-                message_text += f"Компания: {user['company']}\n"
-                
-                # Добавляем заметки, если есть
-                notes = self.candidate_manager.get_candidate_notes(candidate['candidate_id'], user_id)
-                if notes:
-                    message_text += "Заметки:\n"
-                    for note in notes:
-                        message_text += f"- {note['text']}\n"
-                
-                message_text += "\n"
-                
-                keyboard.append([InlineKeyboardButton(
-                    f"Добавить заметку о {user['first_name']} {user['last_name']}",
-                    callback_data=f"add_note_{candidate['candidate_id']}"
-                )])
-        
-        keyboard.append([InlineKeyboardButton("Назад", callback_data="main_menu")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_users_list(self, update: Update, context: CallbackContext):
-        """Показывает список пользователей для администратора."""
-        query = update.callback_query
-        
-        # Получаем список пользователей
-        users = self.db.get_all_users()
-        
-        if not users:
-            query.edit_message_text(
-                "Список пользователей пуст.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        # Формируем сообщение с пользователями
-        message_text = "Список пользователей:\n\n"
-        
-        for user in users[:10]:  # Показываем только первых 10 пользователей
-            message_text += f"👤 *{user['first_name']} {user['last_name']}*\n"
-            message_text += f"Роль: {user['role']}\n"
-            message_text += f"Баллы: {user['points']}\n\n"
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_stands_management(self, update: Update, context: CallbackContext):
-        """Показывает управление стендами для администратора."""
-        query = update.callback_query
-        
-        # Получаем список стендов
-        stands = self.db.get_all_stands()
-        
-        # Формируем сообщение со стендами
-        message_text = "Управление стендами:\n\n"
-        
-        if stands:
-            for stand in stands:
-                message_text += f"🏢 *{stand['name']}*\n"
-                message_text += f"Расположение: {stand['location']}\n"
-                message_text += f"Посещений: {stand['visits']}\n\n"
-        else:
-            message_text += "Список стендов пуст.\n\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("Добавить стенд", callback_data="add_stand")],
-            [InlineKeyboardButton("Назад", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_merch_management(self, update: Update, context: CallbackContext):
-        """Показывает управление мерчем для администратора."""
-        query = update.callback_query
-        
-        # Получаем список мерча
-        merch_items = self.merch_manager.get_all_merch()
-        
-        # Формируем сообщение с мерчем
-        message_text = "Управление мерчем:\n\n"
-        
-        if merch_items:
-            for item in merch_items:
-                message_text += f"🎁 *{item['name']}*\n"
-                message_text += f"Стоимость: {item['points_cost']} баллов\n"
-                message_text += f"Осталось: {item['quantity_left']} / {item['quantity_total']} шт.\n\n"
-        else:
-            message_text += "Каталог мерча пуст.\n\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("Добавить мерч", callback_data="add_merch")],
-            [InlineKeyboardButton("Назад", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def _show_admin_statistics(self, update: Update, context: CallbackContext):
-        """Показывает статистику для администратора."""
-        query = update.callback_query
-        
-        # Получаем статистику
-        stats = self.statistics_manager.get_general_statistics()
-        
-        message_text = "Общая статистика:\n\n"
-        
-        if stats:
-            message_text += f"Всего пользователей: {stats.get('total_users', 0)}\n"
-            message_text += f"Активных пользователей сегодня: {stats.get('active_users_today', 0)}\n"
-            message_text += f"Новых регистраций сегодня: {stats.get('new_registrations_today', 0)}\n"
-            message_text += f"Всего посещений стендов: {stats.get('total_stand_visits', 0)}\n"
-            message_text += f"Всего заказов мерча: {stats.get('total_merch_orders', 0)}\n"
-            message_text += f"Всего начислено баллов: {stats.get('total_points_earned', 0)}\n"
-            message_text += f"Всего потрачено баллов: {stats.get('total_points_spent', 0)}\n"
-        else:
-            message_text += "Статистика недоступна.\n"
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup
-        )
-    
-    def _get_help_text(self, role: str) -> str:
+    def _get_help_text(self, role):
         """Возвращает текст справки в зависимости от роли пользователя."""
-        base_help = (
-            "Основные команды:\n"
-            "/start - Начать работу с ботом\n"
-            "/help - Показать эту справку\n\n"
-        )
-        
         if role == 'guest':
-            return base_help + (
-                "Функции гостя:\n"
-                "- Просмотр каталога мерча\n"
-                "- Проверка баланса баллов\n"
-                "- Заказ мерча за баллы\n"
-                "- Просмотр списка стендов\n"
-                "- Управление подписками на уведомления\n\n"
-                "Для получения баллов посещайте стенды и показывайте свой QR-код стендистам."
+            return (
+                "🌟 *Справка по использованию бота* 🌟\n\n"
+                "Вы зарегистрированы как *посетитель Т-Лаборатории*.\n\n"
+                "Доступные команды:\n"
+                "• /help - Эта справка\n\n"
+                "Возможности бота:\n"
+                "• 📅 Просмотр программу зала\n"
+                "• 💰 Проверка баланса баллов\n"
+                "• 🏢 Просмотр информации о стендах\n"
+                "• 🔔 Подписка на обновления\n\n"
+                "Как получать баллы:\n"
+                "• ✅ За регистрацию в боте\n"
+                "• 📝 За участие в активностях (покажите свой QR-код стендисту)\n\n"
+                "Если у вас возникли вопросы, обратитесь на стойку регистрации у входа в наш зал"
             )
         elif role == 'standist':
-            return base_help + (
-                "Функции стендиста:\n"
-                "- Сканирование QR-кодов посетителей для начисления баллов\n"
-                "- Просмотр статистики посещений стенда\n"
-                "- Управление информацией о стенде\n\n"
-                "Для начисления баллов посетителю отсканируйте его QR-код."
+            return (
+                "🌟 *Справка по использованию бота* 🌟\n\n"
+                "Вы зарегистрированы как *Стендист*.\n\n"
+                "Доступные команды:\n"
+                "• /help - Эта справка\n\n"
+                "Возможности бота:\n"
+                "• 📷 Сканирование QR-кодов посетителей для начисления баллов\n"
+                "• 👤 Отмечайте перспективных ребят\n"
+                "• 📝 Добавление заметок о кандидатах\n"
+                "• 📊 Просмотр статистики посещений вашего стенда\n"
+                "• 🏢 Управление информацией о вашем стенде\n\n"
+                "Как начислять баллы посетителям:\n"
+                "1. Выберите 'Сканировать QR-код'\n"
+                "2. Отсканируйте QR-код посетителя\n"
+                "3. Введите сумму баллов, где 1 наклейка = 10 баллов\n"
+                "3. Баллы будут начислены автоматически\n\n"
+                "Если у вас возникли вопросы, обратитесь к админу - niksfok"
             )
         elif role == 'hr':
-            return base_help + (
-                "Функции HR:\n"
-                "- Отметка потенциальных кандидатов\n"
-                "- Добавление заметок о кандидатах\n"
-                "- Просмотр списка отмеченных кандидатов\n"
-                "- Экспорт данных о кандидатах\n\n"
-                "Для отметки кандидата отсканируйте его QR-код."
+            return (
+                "🌟 *Справка по использованию бота* 🌟\n\n"
+                "Вы зарегистрированы как *HR-специалист*.\n\n"
+                "Доступные команды:\n"
+                "• /start - Главное меню\n"
+                "• /help - Эта справка\n\n"
+                "Возможности бота:\n"
+                "• 👤 Отметка потенциальных кандидатов\n"
+                "• 📋 Просмотр списка отмеченных кандидатов\n"
+                "• 📝 Добавление заметок о кандидатах\n"
+                "• 📤 Экспорт данных о кандидатах\n"
+                "• 💰 Проверка баланса баллов\n"
+                "• 🎁 Заказ мерча за баллы\n\n"
+                "Как отметить кандидата:\n"
+                "1. Выберите 'Отметить кандидата'\n"
+                "2. Отсканируйте QR-код участника\n"
+                "3. Добавьте заметку о кандидате\n\n"
+                "Если у вас возникли вопросы, обратитесь к админу - niksfok"
             )
         elif role == 'admin':
-            return base_help + (
-                "Функции администратора:\n"
-                "- Управление пользователями\n"
-                "- Управление стендами\n"
-                "- Управление мерчем\n"
-                "- Просмотр статистики\n"
-                "- Рассылка сообщений\n\n"
-                "Для доступа к панели администратора используйте команду /admin."
+            return (
+                "🌟 *Справка по использованию бота* 🌟\n\n"
+                "Вы зарегистрированы как *Администратор*.\n\n"
+                "Доступные команды:\n"
+                "• /start - Главное меню\n"
+                "• /help - Эта справка\n"
+                "• /admin - Панель администратора\n\n"
+                "Возможности бота:\n"
+                "• 👥 Управление пользователями (изменение ролей, блокировка)\n"
+                "• 🏢 Управление стендами (добавление, редактирование, удаление)\n"
+                "• 🎁 Управление мерчем (добавление, редактирование, удаление)\n"
+                "• 📊 Просмотр статистики и аналитики\n"
+                "• 📢 Рассылка сообщений пользователям\n\n"
+                "Если у вас возникли вопросы - молись)))"
             )
         else:
-            return base_help
+            return (
+                "🌟 *Справка по использованию бота* 🌟\n\n"
+                "Доступные команды:\n"
+                "• /start - Главное меню\n"
+                "• /help - Эта справка\n\n"
+                "Если у вас возникли вопросы, обратитесь на стойку регистрации у входа в наш зал"
+            )
     
-    def run(self):
+    def run_bot(self):
         """Запускает бота в режиме long polling."""
+        logger.info("Запуск бота...")
         self.updater.start_polling()
         self.updater.idle()
-        logging.info('Бот запущен в режиме long polling')
+        logger.info("Бот остановлен")
 
-
+# Точка входа
 if __name__ == "__main__":
-    bot = ConferenceBot()
-    bot.run()
+    try:
+        bot = ConferenceBot()
+        bot.run_bot()
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске бота: {e}")
+        print(f"Критическая ошибка при запуске бота: {e}")

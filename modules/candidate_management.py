@@ -84,7 +84,8 @@ class CandidateManager:
             'candidate_id': candidate_id,
             'hr_id': hr_id,
             'text': text,
-            'rating': rating
+            'rating': rating,
+            'created_at': datetime.datetime.utcnow()
         }
         
         self.db.create_candidate_note(note_data)
@@ -97,7 +98,31 @@ class CandidateManager:
     
     def get_candidate_notes(self, candidate_id: int, hr_id: int = None) -> List[Dict[str, Any]]:
         """Получает список заметок о кандидате."""
-        return self.db.get_candidate_notes(candidate_id, hr_id)
+        notes = self.db.get_candidate_notes(candidate_id, hr_id)
+        
+        # Добавляем форматирование для улучшения UX
+        for note in notes:
+            # Добавляем эмодзи к дате создания
+            if 'created_at' in note:
+                note['created_at_display'] = f"📅 {note['created_at'].strftime('%d.%m.%Y %H:%M')}"
+            
+            # Добавляем эмодзи к рейтингу, если он есть
+            if 'rating' in note and note['rating'] is not None:
+                rating = note['rating']
+                if rating == 5:
+                    note['rating_display'] = '⭐⭐⭐⭐⭐'
+                elif rating == 4:
+                    note['rating_display'] = '⭐⭐⭐⭐'
+                elif rating == 3:
+                    note['rating_display'] = '⭐⭐⭐'
+                elif rating == 2:
+                    note['rating_display'] = '⭐⭐'
+                elif rating == 1:
+                    note['rating_display'] = '⭐'
+                else:
+                    note['rating_display'] = ''
+        
+        return notes
     
     def get_hr_candidates(self, hr_id: int) -> List[Dict[str, Any]]:
         """Получает список кандидатов, отмеченных указанным HR."""
@@ -118,14 +143,20 @@ class CandidateManager:
                 # Получаем заметки об этом кандидате от этого HR
                 notes = self.get_candidate_notes(candidate_id, hr_id)
                 
+                # Добавляем эмодзи к уровню для улучшения UX
+                level = user.get('level', '')
+                level_emoji = '🌱' if level == 'junior' else ('🌿' if level == 'middle' else ('🌲' if level == 'senior' else ('🌳' if level == 'lead' else '👤')))
+                
                 candidates.append({
                     'candidate_id': candidate_id,
                     'first_name': user.get('first_name', ''),
                     'last_name': user.get('last_name', ''),
                     'occupation': user.get('occupation', ''),
-                    'level': user.get('level', ''),
+                    'level': level,
+                    'level_display': f"{level_emoji} {level.capitalize()}" if level else '👤 Не указан',
                     'company': user.get('company', ''),
-                    'notes': notes
+                    'notes': notes,
+                    'notes_count': len(notes)
                 })
         
         return candidates
@@ -152,15 +183,22 @@ class CandidateManager:
                         'name': f"{hr.get('first_name', '')} {hr.get('last_name', '')}"
                     })
             
+            # Добавляем эмодзи к уровню для улучшения UX
+            level = user.get('level', '')
+            level_emoji = '🌱' if level == 'junior' else ('🌿' if level == 'middle' else ('🌲' if level == 'senior' else ('🌳' if level == 'lead' else '👤')))
+            
             candidates.append({
                 'candidate_id': user.get('user_id'),
                 'first_name': user.get('first_name', ''),
                 'last_name': user.get('last_name', ''),
                 'occupation': user.get('occupation', ''),
-                'level': user.get('level', ''),
+                'level': level,
+                'level_display': f"{level_emoji} {level.capitalize()}" if level else '👤 Не указан',
                 'company': user.get('company', ''),
                 'notes': notes,
-                'hrs': hrs
+                'notes_count': len(notes),
+                'hrs': hrs,
+                'hrs_count': len(hrs)
             })
         
         return candidates
@@ -187,7 +225,8 @@ class CandidateManager:
                 'Должность': candidate.get('occupation', ''),
                 'Уровень': candidate.get('level', ''),
                 'Компания': candidate.get('company', ''),
-                'Заметки': notes_text
+                'Заметки': notes_text,
+                'Количество заметок': candidate.get('notes_count', 0)
             })
         
         # Создаем DataFrame и экспортируем в Excel
@@ -211,6 +250,20 @@ class CandidateManager:
             if level not in level_stats:
                 level_stats[level] = 0
             level_stats[level] += 1
+        
+        # Добавляем эмодзи к уровням
+        level_stats_display = {}
+        for level, count in level_stats.items():
+            if level == 'junior':
+                level_stats_display['🌱 Junior'] = count
+            elif level == 'middle':
+                level_stats_display['🌿 Middle'] = count
+            elif level == 'senior':
+                level_stats_display['🌲 Senior'] = count
+            elif level == 'lead':
+                level_stats_display['🌳 Lead'] = count
+            else:
+                level_stats_display['👤 ' + level] = count
         
         # Статистика по компаниям кандидатов
         company_stats = {}
@@ -236,13 +289,15 @@ class CandidateManager:
                 top_hrs.append({
                     'hr_id': hr_id,
                     'name': f"{hr.get('first_name', '')} {hr.get('last_name', '')}",
-                    'candidates_count': count
+                    'candidates_count': count,
+                    'trophy': '🏆' if count >= 10 else ('🥈' if count >= 5 else '🥉')
                 })
         
         return {
             'total_candidates': total_candidates,
             'total_notes': total_notes,
             'level_stats': level_stats,
+            'level_stats_display': level_stats_display,
             'company_stats': company_stats,
             'top_hrs': top_hrs
         }
