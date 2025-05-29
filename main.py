@@ -214,7 +214,7 @@ class ConferenceBot:
         full_name = update.message.text.strip()
         if len(full_name.split()) < 2:
             update.message.reply_text(
-                "🙏 Пожалуйста, введите и имя, и фамилию, разделенные пробелом:"
+                "🙏 Пожалуйста, введите и имя, и фамилию, разделенные пробелом: "
             )
             return REGISTRATION
         
